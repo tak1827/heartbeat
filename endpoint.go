@@ -9,12 +9,18 @@ import (
 	// "log"
 	"math"
 	"net"
+	"sync"
+	"time"
 )
+
+var HeartbeatMsg = []byte("heartbeat")
 
 type receiveHandler func(packetData []byte)
 type errorHandler func(err error)
 
 type Endpoint struct {
+	heartbeatPeriod time.Duration
+
 	maxPacketSize uint16
 	fragmentAbove uint16
 
@@ -31,7 +37,14 @@ type Endpoint struct {
 	rh receiveHandler
 	eh errorHandler
 
+	timers map[net.Addr]*time.Timer
+
+	exit chan struct{} // signal channel to close the conn
+
 	fragmentReassembly map[uint16]*fragmentReassemblyData
+
+	mu sync.Mutex
+	wg sync.WaitGroup
 
 	seq uint16
 }
@@ -44,10 +57,16 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 	e := &Endpoint{
 		addr:               conn.LocalAddr(),
 		fragmentReassembly: make(map[uint16]*fragmentReassemblyData),
+		exit:               make(chan struct{}),
+		timers:             make(map[net.Addr]*time.Timer),
 	}
 
 	for _, opt := range opts {
 		opt.apply(e)
+	}
+
+	if e.heartbeatPeriod == 0 {
+		e.heartbeatPeriod = DefaultHeartbeatPeriod
 	}
 
 	if e.maxPacketSize == 0 {
@@ -111,8 +130,8 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 	buf := e.pool.Get()
 	defer e.pool.Put(buf)
 
-	// regular packet
 	if pBytes <= int(e.fragmentAbove) {
+		// regular packet
 		buf.WriteByte(RegularPacketPrefix)
 		buf.Write(packetData)
 
@@ -123,35 +142,50 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 		e.re.WriteReliablePacket(msg, addr)
 
-		return nil
-	}
-
-	// fragment packet
-	if pBytes%int(e.fragmentSize) != 0 {
-		extra = 1
-	}
-	numFragments := (uint16(pBytes) / e.fragmentSize) + extra
-
-	// log.Printf("%p: sending packet (fragmentation=%v)", e, numFragments)
-
-	// write each fragment with header and data
-	for fragmentID = 0; fragmentID < numFragments; fragmentID++ {
-		seq := e.seq % math.MaxUint16
-
-		marshalFragmentHeader(buf, seq, fragmentID, numFragments)
-
-		// last
-		if fragmentID == numFragments-1 {
-			buf.Write(packetData[fragmentID*e.fragmentSize:])
-		} else {
-			buf.Write(packetData[fragmentID*e.fragmentSize : (fragmentID+1)*e.fragmentSize])
+	} else {
+		// fragment packet
+		if pBytes%int(e.fragmentSize) != 0 {
+			extra = 1
 		}
+		numFragments := (uint16(pBytes) / e.fragmentSize) + extra
 
-		msg := make([]byte, len(buf.B))
-		copy(msg, buf.B)
-		buf.Reset()
+		// log.Printf("%p: sending packet (fragmentation=%v)", e, numFragments)
 
-		e.re.WriteReliablePacket(msg, addr)
+		// write each fragment with header and data
+		for fragmentID = 0; fragmentID < numFragments; fragmentID++ {
+			seq := e.seq % math.MaxUint16
+
+			marshalFragmentHeader(buf, seq, fragmentID, numFragments)
+
+			if fragmentID == numFragments-1 {
+				// last　fragment
+				buf.Write(packetData[fragmentID*e.fragmentSize:])
+			} else {
+				buf.Write(packetData[fragmentID*e.fragmentSize : (fragmentID+1)*e.fragmentSize])
+			}
+
+			msg := make([]byte, len(buf.B))
+			copy(msg, buf.B)
+			buf.Reset()
+
+			e.re.WriteReliablePacket(msg, addr)
+		}
+	}
+
+	timer := e.timers[addr]
+	if timer == nil {
+		// run heartbeat
+		timer = time.NewTimer(e.heartbeatPeriod)
+		e.timers[addr] = timer
+
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			e.RunHeartbeat(timer, addr)
+		}()
+	} else {
+		// reset heartbeat timer
+		timer.Reset(e.heartbeatPeriod)
 	}
 
 	return nil
@@ -195,7 +229,7 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 		data = newFragmentRessembleyData(h, e.fragmentSize)
 	}
 
-	// ignore fragment already received
+	// ignore already received fragment
 	if _, ok = searchUint8(h.fragmentID, data.fragmentReceived); ok {
 		return nil
 	}
@@ -226,10 +260,31 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	return nil
 }
 
+func (e *Endpoint) RunHeartbeat(timer *time.Timer, addr net.Addr) {
+	for {
+		select {
+		case <-e.exit:
+			return
+		case <-timer.C:
+			timer.Reset(e.heartbeatPeriod)
+			if err := e.WritePacket(HeartbeatMsg, addr); err != nil {
+				if e.eh != nil {
+					e.eh(fmt.Errorf("failed to write heartbeat, %v", err))
+				}
+			}
+		}
+	}
+}
+
 func (e *Endpoint) Listen() {
-	go e.re.Listen()
+	e.re.Listen()
 }
 
 func (e *Endpoint) Close() error {
-	return e.re.Close()
+	if err := e.re.Close(); err != nil {
+		return err
+	}
+	close(e.exit)
+	e.wg.Wait()
+	return nil
 }

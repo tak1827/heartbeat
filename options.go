@@ -1,6 +1,12 @@
 package heartbeat
 
+import (
+	"time"
+)
+
 const (
+	DefaultHeartbeatPeriod = 20 * time.Millisecond
+
 	DefaultMaxPacketSize uint16 = 1024 * 63
 
 	DefaultFragmentAbove uint16 = 1024
