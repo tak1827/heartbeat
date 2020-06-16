@@ -3,7 +3,7 @@ package heartbeat
 import (
 	"errors"
 	"fmt"
-	"github.com/davecgh/go-spew/spew"
+	// "github.com/davecgh/go-spew/spew"
 	"github.com/lithdew/reliable"
 	"github.com/valyala/bytebufferpool"
 	// "log"
@@ -19,46 +19,50 @@ type receiveHandler func(packetData []byte)
 type errorHandler func(err error)
 
 type Endpoint struct {
+	// heartbeat options
 	heartbeatPeriod time.Duration
 
+	// fragments options
 	maxPacketSize uint16
 	fragmentAbove uint16
-
-	maxFragments uint16
-	fragmentSize uint16
+	maxFragments  uint16
+	fragmentSize  uint16
 
 	conn *net.PacketConn
 	addr net.Addr
 
 	re *reliable.Endpoint
 
-	pool bytebufferpool.Pool
+	seq uint16 // fragment packets sequence number
 
-	rh receiveHandler
-	eh errorHandler
+	timers map[net.Addr]*time.Timer // heartbeat timer
 
-	timers map[net.Addr]*time.Timer
+	// TODO: garbage collection
+	fReassembly map[uint16]*fragmentReassemblyData // map for reassembling fragment packets
 
 	exit chan struct{} // signal channel to close the conn
 
-	fragmentReassembly map[uint16]*fragmentReassemblyData
+	// Note: ack and heartbeat are ignored on this receiver
+	rh receiveHandler
+	eh errorHandler
+
+	pool bytebufferpool.Pool
 
 	mu sync.Mutex
 	wg sync.WaitGroup
-
-	seq uint16
 }
 
+// Note: about reOpts, reliable.WithEndpointPacketHandler is overwritten
 func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts []Option, reOpts ...reliable.EndpointOption) (*Endpoint, error) {
 	if conn == nil {
-		return nil, errors.New("must path conn argument")
+		return nil, errors.New("no conn argument")
 	}
 
 	e := &Endpoint{
-		addr:               conn.LocalAddr(),
-		fragmentReassembly: make(map[uint16]*fragmentReassemblyData),
-		exit:               make(chan struct{}),
-		timers:             make(map[net.Addr]*time.Timer),
+		addr:        conn.LocalAddr(),
+		fReassembly: make(map[uint16]*fragmentReassemblyData),
+		exit:        make(chan struct{}),
+		timers:      make(map[net.Addr]*time.Timer),
 	}
 
 	for _, opt := range opts {
@@ -98,6 +102,7 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 		if len(buf) == 0 {
 			return
 		}
+
 		if err := e.ReadPacket(buf); err != nil {
 			if e.eh != nil {
 				e.eh(err)
@@ -118,36 +123,33 @@ func (e *Endpoint) Addr() net.Addr {
 
 func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 	var (
-		extra      uint16
-		fragmentID uint16
+		extra      uint8
+		fragmentID uint8
 	)
 
-	pBytes := len(packetData)
-	if pBytes > int(e.maxPacketSize) {
-		return fmt.Errorf("sending data is too large, size: %v", pBytes)
+	pSize := len(packetData)
+	if pSize > int(e.maxPacketSize) {
+		return fmt.Errorf("sending data is too large, size: %v", pSize)
 	}
 
 	buf := e.pool.Get()
 	defer e.pool.Put(buf)
 
-	if pBytes <= int(e.fragmentAbove) {
+	if pSize <= int(e.fragmentAbove) {
 		// regular packet
 		buf.WriteByte(RegularPacketPrefix)
 		buf.Write(packetData)
 
-		msg := make([]byte, len(buf.B))
-		copy(msg, buf.B)
-
 		// log.Printf("%p: sending packet without fragmentation", e)
 
-		e.re.WriteReliablePacket(msg, addr)
+		e.re.WriteReliablePacket(buf.B, addr)
 
 	} else {
 		// fragment packet
-		if pBytes%int(e.fragmentSize) != 0 {
+		if pSize%int(e.fragmentSize) != 0 {
 			extra = 1
 		}
-		numFragments := (uint16(pBytes) / e.fragmentSize) + extra
+		numFragments := uint8(pSize/int(e.fragmentSize)) + extra
 
 		// log.Printf("%p: sending packet (fragmentation=%v)", e, numFragments)
 
@@ -159,16 +161,14 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 			if fragmentID == numFragments-1 {
 				// last　fragment
-				buf.Write(packetData[fragmentID*e.fragmentSize:])
+				buf.Write(packetData[uint16(fragmentID)*e.fragmentSize:])
 			} else {
-				buf.Write(packetData[fragmentID*e.fragmentSize : (fragmentID+1)*e.fragmentSize])
+				buf.Write(packetData[uint16(fragmentID)*e.fragmentSize : uint16(fragmentID+1)*e.fragmentSize])
 			}
 
-			msg := make([]byte, len(buf.B))
-			copy(msg, buf.B)
-			buf.Reset()
+			e.re.WriteReliablePacket(buf.B, addr)
 
-			e.re.WriteReliablePacket(msg, addr)
+			buf.Reset()
 		}
 	}
 
@@ -183,6 +183,7 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 			defer e.wg.Done()
 			e.RunHeartbeat(timer, addr)
 		}()
+
 	} else {
 		// reset heartbeat timer
 		timer.Reset(e.heartbeatPeriod)
@@ -198,10 +199,9 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 		ok      bool
 	)
 
-	pBytes := len(packetData)
-	if pBytes < 1 || pBytes > int(e.maxPacketSize)+int(FragmentHeaderBytes) {
-		spew.Dump(packetData)
-		return fmt.Errorf("packet size is out of range, size: %v", pBytes)
+	pSize := len(packetData)
+	if pSize < 1 || pSize > int(e.maxPacketSize)+int(FragmentHeaderSize) {
+		return fmt.Errorf("packet size is out of range, size: %v", pSize)
 	}
 
 	// regular packet
@@ -213,18 +213,18 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	}
 
 	// fragment packets
-	h, err := unmarshalFragmentHeader(packetData)
+	h, err := unmarshalFragmentHeader(packetData[:FragmentHeaderSize])
 	if err != nil {
 		return err
 	}
 
-	fPacket = packetData[FragmentHeaderBytes:]
+	fPacket = packetData[FragmentHeaderSize:]
 
 	if len(fPacket) > int(e.fragmentSize) {
 		return fmt.Errorf("fragment size is out of range, size: %v", len(fPacket))
 	}
 
-	data, ok = e.fragmentReassembly[h.seq]
+	data, ok = e.fReassembly[h.seq]
 	if !ok {
 		data = newFragmentRessembleyData(h, e.fragmentSize)
 	}
@@ -238,9 +238,9 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	data.fragmentReceived = append(data.fragmentReceived, h.fragmentID)
 	data.StoreFragmentData(h, e.fragmentSize, fPacket)
 
-	// last
+	// last packet
 	if h.fragmentID == h.numFragments-1 {
-		data.size = int(data.numFragmentsTotal-1)*int(e.fragmentSize) + len(packetData[FragmentHeaderBytes:])
+		data.size = uint16(data.numFragmentsTotal-1)*e.fragmentSize + uint16(len(packetData[FragmentHeaderSize:]))
 	}
 
 	// completed reassembly of packet
@@ -250,12 +250,12 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 			e.rh(data.packetData[:data.size])
 		}
 
-		delete(e.fragmentReassembly, h.seq)
+		delete(e.fReassembly, h.seq)
 
 		return nil
 	}
 
-	e.fragmentReassembly[h.seq] = data
+	e.fReassembly[h.seq] = data
 
 	return nil
 }

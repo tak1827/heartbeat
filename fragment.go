@@ -6,7 +6,7 @@ import (
 	"github.com/valyala/bytebufferpool"
 )
 
-const FragmentHeaderBytes uint8 = 5
+const FragmentHeaderSize uint8 = 5
 
 const (
 	RegularPacketPrefix byte = iota
@@ -24,7 +24,7 @@ type fragmentReassemblyData struct {
 	numFragmentsTotal    uint8
 	numFragmentsReceived uint8
 	fragmentReceived     []uint8
-	size                 int
+	size                 uint16
 	packetData           []byte // TODO: allocate from bytebufferpool
 }
 
@@ -39,7 +39,7 @@ func (f *fragmentReassemblyData) StoreFragmentData(h *fragmentHeader, fragmentSi
 	copy(f.packetData[uint16(h.fragmentID)*fragmentSize:], packet)
 }
 
-func marshalFragmentHeader(b *bytebufferpool.ByteBuffer, seq, fragmentID, numFragments uint16) {
+func marshalFragmentHeader(b *bytebufferpool.ByteBuffer, seq uint16, fragmentID, numFragments uint8) {
 	b.WriteByte(FragmentPacketPrefix)
 	b.Write(bytesutil.AppendUint16BE(nil, seq))
 	b.WriteByte(byte(fragmentID))
@@ -47,19 +47,19 @@ func marshalFragmentHeader(b *bytebufferpool.ByteBuffer, seq, fragmentID, numFra
 }
 
 func unmarshalFragmentHeader(buf []byte) (*fragmentHeader, error) {
-	if len(buf) < int(FragmentHeaderBytes) {
+	if len(buf) < int(FragmentHeaderSize) {
 		return nil, fmt.Errorf("fragment packet size is less than its header, pakcet: %v", buf)
 	}
 
-	h := &fragmentHeader{}
-	h.prefix, buf = buf[0], buf[1:]
-	h.seq, buf = bytesutil.Uint16BE(buf[:2]), buf[2:]
-	h.fragmentID, buf = uint8(buf[0]), buf[1:]
-	h.numFragments, buf = uint8(buf[0]), buf[1:]
-
-	if h.prefix != FragmentPacketPrefix {
+	if buf[0] != FragmentPacketPrefix {
 		return nil, fmt.Errorf("packet prefix is wrong, prefix: %v", buf[0])
 	}
+
+	h := &fragmentHeader{}
+	h.prefix = buf[0]
+	h.seq = bytesutil.Uint16BE(buf[1:3])
+	h.fragmentID = uint8(buf[3])
+	h.numFragments = uint8(buf[4])
 
 	if h.fragmentID >= h.numFragments {
 		return nil, fmt.Errorf("fragment id is outside of range of num fragments, id: %v, num: %v", h.fragmentID, h.numFragments)

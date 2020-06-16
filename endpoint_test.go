@@ -30,6 +30,7 @@ func TestWritePacket(t *testing.T) {
 
 	actual := uint64(0)
 	expected := uint64(DefaultMaxPacketSize)
+	// expected := uint64(1000)
 
 	recvHandler := func(buf []byte) {
 		atomic.AddUint64(&actual, 1)
@@ -90,6 +91,8 @@ func TestHertbeat(t *testing.T) {
 			atomic.AddUint64(&actualSentMsg, 1)
 		} else if bytes.Compare(buf, HeartbeatMsg) == 0 {
 			atomic.AddUint64(&actualHeartbeat, 1)
+		} else {
+			panic("suppose not pass")
 		}
 	}
 
