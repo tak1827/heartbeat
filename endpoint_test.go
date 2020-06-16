@@ -32,7 +32,7 @@ func TestWritePacket(t *testing.T) {
 	values := make(map[string]struct{})
 
 	actual := uint64(0)
-	expected := uint64(DefaultMaxPacketSize)
+	expected := uint64(DefaultFragmentSize*DefaultMaxFragments)
 
 	recvHandler := func(buf []byte) {
 		atomic.AddUint64(&actual, 1)
@@ -267,7 +267,7 @@ func uniqSort(s []int) (result []int) {
 }
 
 func BenchmarkWrite(b *testing.B) {
-	expected := bytes.Repeat([]byte("x"), int(DefaultMaxPacketSize)/2)
+	expected := bytes.Repeat([]byte("x"), int(DefaultFragmentSize*DefaultMaxFragments)/2)
 
 	recvHandler := func(buf []byte) {
 		require.EqualValues(b, expected, buf)

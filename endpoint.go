@@ -24,10 +24,8 @@ type Endpoint struct {
 	heartbeatPeriod time.Duration
 
 	// fragments options
-	maxPacketSize uint16
-	fragmentAbove uint16
-	maxFragments  uint16
-	fragmentSize  uint16
+	fragmentSize uint16
+	maxFragments uint16
 
 	conn *net.PacketConn
 	addr net.Addr
@@ -59,35 +57,12 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 		return nil, errors.New("no conn argument")
 	}
 
-	e := &Endpoint{
-		addr:        conn.LocalAddr(),
-		fReassembly: make(map[uint16]*fragmentReassemblyData),
-		exit:        make(chan struct{}),
-		timers:      make(map[net.Addr]*time.Timer),
-	}
+	e := setDefaultOptions()
+
+	e.addr = conn.LocalAddr()
 
 	for _, opt := range opts {
 		opt.apply(e)
-	}
-
-	if e.heartbeatPeriod == 0 {
-		e.heartbeatPeriod = DefaultHeartbeatPeriod
-	}
-
-	if e.maxPacketSize == 0 {
-		e.maxPacketSize = DefaultMaxPacketSize
-	}
-
-	if e.fragmentAbove == 0 {
-		e.fragmentAbove = DefaultFragmentAbove
-	}
-
-	if e.maxFragments == 0 {
-		e.maxFragments = DefaultMaxFragments
-	}
-
-	if e.fragmentSize == 0 {
-		e.fragmentSize = DefaultFragmentSize
 	}
 
 	if rh != nil {
@@ -129,14 +104,14 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 	)
 
 	pSize := len(packetData)
-	if pSize > int(e.maxPacketSize) {
+	if pSize > int(e.fragmentSize*e.maxFragments) {
 		return fmt.Errorf("sending data is too large, size: %v", pSize)
 	}
 
 	buf := e.pool.Get()
 	defer e.pool.Put(buf)
 
-	if pSize <= int(e.fragmentAbove) {
+	if pSize <= int(e.fragmentSize) {
 		// regular packet
 		buf.WriteByte(RegularPacketPrefix)
 		buf.Write(packetData)
@@ -173,38 +148,20 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 		}
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	timer := e.timers[addr]
-	if timer == nil {
-		// run heartbeat
-		timer = time.NewTimer(e.heartbeatPeriod)
-		e.timers[addr] = timer
-
-		e.wg.Add(1)
-		go func() {
-			defer e.wg.Done()
-			e.RunHeartbeat(timer, addr)
-		}()
-
-	} else {
-		// reset heartbeat timer
-		timer.Reset(e.heartbeatPeriod)
-	}
+	e.runHeartbeat(addr)
 
 	return nil
 }
 
 func (e *Endpoint) ReadPacket(packetData []byte) error {
 	var (
-		fPacket []byte
-		data    *fragmentReassemblyData
-		ok      bool
+		fPacket       []byte
+		data          *fragmentReassemblyData
+		ok, completed bool
 	)
 
 	pSize := len(packetData)
-	if pSize < 1 || pSize > int(e.maxPacketSize)+int(FragmentHeaderSize) {
+	if pSize < 1 || pSize > int(e.fragmentSize)+int(FragmentHeaderSize) {
 		return fmt.Errorf("packet size is out of range, size: %v", pSize)
 	}
 
@@ -238,18 +195,8 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 		return nil
 	}
 
-	data.numFragmentsReceived++
-	data.fragmentReceived = append(data.fragmentReceived, h.fragmentID)
-	data.StoreFragmentData(h, e.fragmentSize, fPacket)
-
-	// last packet
-	if h.fragmentID == h.numFragments-1 {
-		data.size = uint16(data.numFragmentsTotal-1)*e.fragmentSize + uint16(len(packetData[FragmentHeaderSize:]))
-	}
-
-	// completed reassembly of packet
-	if data.numFragmentsReceived == data.numFragmentsTotal {
-
+	data, completed = data.reassemble(fPacket, h, e.fragmentSize)
+	if completed {
 		if e.rh != nil {
 			e.rh(data.packetData[:data.size])
 		}
@@ -264,7 +211,42 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	return nil
 }
 
-func (e *Endpoint) RunHeartbeat(timer *time.Timer, addr net.Addr) {
+func (e *Endpoint) Listen() {
+	e.re.Listen()
+}
+
+func (e *Endpoint) Close() error {
+	if err := e.re.Close(); err != nil {
+		return err
+	}
+	close(e.exit)
+	e.wg.Wait()
+	return nil
+}
+
+func (e *Endpoint) runHeartbeat(addr net.Addr) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	timer := e.timers[addr]
+	if timer == nil {
+		// run heartbeat
+		timer = time.NewTimer(e.heartbeatPeriod)
+		e.timers[addr] = timer
+
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			e.sendHeartbeat(timer, addr)
+		}()
+
+	} else {
+		// reset heartbeat timer
+		timer.Reset(e.heartbeatPeriod)
+	}
+}
+
+func (e *Endpoint) sendHeartbeat(timer *time.Timer, addr net.Addr) {
 	for {
 		select {
 		case <-e.exit:
@@ -278,17 +260,4 @@ func (e *Endpoint) RunHeartbeat(timer *time.Timer, addr net.Addr) {
 			}
 		}
 	}
-}
-
-func (e *Endpoint) Listen() {
-	e.re.Listen()
-}
-
-func (e *Endpoint) Close() error {
-	if err := e.re.Close(); err != nil {
-		return err
-	}
-	close(e.exit)
-	e.wg.Wait()
-	return nil
 }

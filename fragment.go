@@ -35,8 +35,22 @@ func newFragmentRessembleyData(h *fragmentHeader, fragmentSize uint16) *fragment
 	}
 }
 
-func (f *fragmentReassemblyData) StoreFragmentData(h *fragmentHeader, fragmentSize uint16, packet []byte) {
+func (f *fragmentReassemblyData) reassemble(packet []byte, h *fragmentHeader, fragmentSize uint16) (*fragmentReassemblyData, bool) {
+	f.numFragmentsReceived++
+	f.fragmentReceived = append(f.fragmentReceived, h.fragmentID)
 	copy(f.packetData[uint16(h.fragmentID)*fragmentSize:], packet)
+
+	// last packet
+	if h.fragmentID == h.numFragments-1 {
+		f.size = uint16(f.numFragmentsTotal-1)*fragmentSize + uint16(len(packet))
+	}
+
+	// reassemble completed
+	if f.numFragmentsReceived == f.numFragmentsTotal {
+		return f, true
+	}
+
+	return f, false
 }
 
 func marshalFragmentHeader(b *bytebufferpool.ByteBuffer, seq uint16, fragmentID, numFragments uint8) {
