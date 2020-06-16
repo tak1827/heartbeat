@@ -32,7 +32,7 @@ func TestWritePacket(t *testing.T) {
 	values := make(map[string]struct{})
 
 	actual := uint64(0)
-	expected := uint64(DefaultFragmentSize*DefaultMaxFragments)
+	expected := uint64(DefaultFragmentSize * DefaultMaxFragments)
 
 	recvHandler := func(buf []byte) {
 		atomic.AddUint64(&actual, 1)

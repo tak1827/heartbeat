@@ -10,6 +10,7 @@ const (
 	DefaultHeartbeatPeriod = 20 * time.Millisecond
 
 	// fragment options
+	// TODO: increase to uint32
 	DefaultFragmentSize uint16 = 1024
 	DefaultMaxFragments uint16 = 64 - 1
 )

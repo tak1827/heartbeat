@@ -14,7 +14,8 @@ import (
 	"time"
 )
 
-var HeartbeatMsg = []byte("heartbeat")
+// NOTE: a data same as "HeartbeatMsg" is ignored
+var HeartbeatMsg = []byte(".hb")
 
 type receiveHandler func(packetData []byte)
 type errorHandler func(err error)
@@ -86,9 +87,7 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 		}
 	}
 
-	reOpts = append(reOpts, reliable.WithEndpointPacketHandler(handler))
-
-	e.re = reliable.NewEndpoint(conn, reOpts...)
+	e.re = reliable.NewEndpoint(conn, append(reOpts, reliable.WithEndpointPacketHandler(handler))...)
 
 	return e, nil
 }
@@ -105,7 +104,7 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 	pSize := len(packetData)
 	if pSize > int(e.fragmentSize*e.maxFragments) {
-		return fmt.Errorf("sending data is too large, size: %v", pSize)
+		return fmt.Errorf("sending data is too large, size: %+v", pSize)
 	}
 
 	buf := e.pool.Get()
@@ -127,9 +126,10 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 		}
 		numFragments := uint8(pSize/int(e.fragmentSize)) + extra
 
-		// log.Printf("%p: sending packet (fragmentation=%v)", e, numFragments)
+		// log.Printf("%p: sending packet (fragmentation=%+v)", e, numFragments)
 
 		// write each fragment with header and data
+		// Note: avoid concurrently sending which lead to slow down
 		for fragmentID = 0; fragmentID < numFragments; fragmentID++ {
 			seq := e.seq % math.MaxUint16
 
@@ -162,7 +162,7 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 
 	pSize := len(packetData)
 	if pSize < 1 || pSize > int(e.fragmentSize)+int(FragmentHeaderSize) {
-		return fmt.Errorf("packet size is out of range, size: %v", pSize)
+		return fmt.Errorf("packet size is out of range, size: %+v", pSize)
 	}
 
 	// regular packet
@@ -182,7 +182,7 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	fPacket = packetData[FragmentHeaderSize:]
 
 	if len(fPacket) > int(e.fragmentSize) {
-		return fmt.Errorf("fragment size is out of range, size: %v", len(fPacket))
+		return fmt.Errorf("fragment size is out of range, size: %+v", len(fPacket))
 	}
 
 	data, ok = e.fReassembly[h.seq]
@@ -228,8 +228,8 @@ func (e *Endpoint) runHeartbeat(addr net.Addr) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	timer := e.timers[addr]
-	if timer == nil {
+	timer, exist := e.timers[addr]
+	if !exist {
 		// run heartbeat
 		timer = time.NewTimer(e.heartbeatPeriod)
 		e.timers[addr] = timer
@@ -255,7 +255,7 @@ func (e *Endpoint) sendHeartbeat(timer *time.Timer, addr net.Addr) {
 			timer.Reset(e.heartbeatPeriod)
 			if err := e.WritePacket(HeartbeatMsg, addr); err != nil {
 				if e.eh != nil {
-					e.eh(fmt.Errorf("failed to write heartbeat, %v", err))
+					e.eh(fmt.Errorf("failed to write heartbeat, %+v", err))
 				}
 			}
 		}

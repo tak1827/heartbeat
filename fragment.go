@@ -62,11 +62,11 @@ func marshalFragmentHeader(b *bytebufferpool.ByteBuffer, seq uint16, fragmentID,
 
 func unmarshalFragmentHeader(buf []byte) (*fragmentHeader, error) {
 	if len(buf) < int(FragmentHeaderSize) {
-		return nil, fmt.Errorf("fragment packet size is less than its header, pakcet: %v", buf)
+		return nil, fmt.Errorf("fragment packet size is less than its header, pakcet: %+v", buf)
 	}
 
 	if buf[0] != FragmentPacketPrefix {
-		return nil, fmt.Errorf("packet prefix is wrong, prefix: %v", buf[0])
+		return nil, fmt.Errorf("packet prefix is wrong, prefix: %+v", buf[0])
 	}
 
 	h := &fragmentHeader{}
@@ -76,7 +76,7 @@ func unmarshalFragmentHeader(buf []byte) (*fragmentHeader, error) {
 	h.numFragments = uint8(buf[4])
 
 	if h.fragmentID >= h.numFragments {
-		return nil, fmt.Errorf("fragment id is outside of range of num fragments, id: %v, num: %v", h.fragmentID, h.numFragments)
+		return nil, fmt.Errorf("fragment id is outside of range of num fragments, id: %+v, num: %+v", h.fragmentID, h.numFragments)
 	}
 
 	return h, nil
