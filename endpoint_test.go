@@ -265,3 +265,41 @@ func uniqSort(s []int) (result []int) {
 	}
 	return
 }
+
+func BenchmarkWrite(b *testing.B) {
+	expected := bytes.Repeat([]byte("x"), int(DefaultMaxPacketSize)/2)
+
+	recvHandler := func(buf []byte) {
+		require.EqualValues(b, expected, buf)
+	}
+
+	errHandler := func(err error) {
+		require.NoError(b, err)
+	}
+
+	ca, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	ea, _ := NewEndpoint(ca, recvHandler, errHandler, nil)
+	cb, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	eb, _ := NewEndpoint(cb, recvHandler, errHandler, nil)
+
+	defer func() {
+		require.NoError(b, ca.SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(b, cb.SetDeadline(time.Now().Add(1*time.Millisecond)))
+
+		require.NoError(b, ea.Close())
+		require.NoError(b, eb.Close())
+
+		ca.Close()
+		cb.Close()
+	}()
+
+	go ea.Listen()
+	go eb.Listen()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		require.NoError(b, ea.WritePacket(expected, eb.Addr()))
+	}
+}
