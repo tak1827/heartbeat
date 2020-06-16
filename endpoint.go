@@ -1,6 +1,7 @@
 package heartbeat
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	// "github.com/davecgh/go-spew/spew"
@@ -98,8 +99,8 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 	}
 
 	handler := func(buf []byte, addr net.Addr) {
-		// ignore ack
-		if len(buf) == 0 {
+		// ignore ack and hearbeat
+		if len(buf) == 0 || bytes.Compare(buf, append([]byte{0}, HeartbeatMsg...)) == 0 {
 			return
 		}
 

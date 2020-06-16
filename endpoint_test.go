@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	// "github.com/davecgh/go-spew/spew"
 )
 
 func newEndpoint(t *testing.T, rh receiveHandler, eh errorHandler) (net.PacketConn, *Endpoint) {
@@ -30,7 +31,6 @@ func TestWritePacket(t *testing.T) {
 
 	actual := uint64(0)
 	expected := uint64(DefaultMaxPacketSize)
-	// expected := uint64(1000)
 
 	recvHandler := func(buf []byte) {
 		atomic.AddUint64(&actual, 1)
@@ -79,8 +79,6 @@ func TestHertbeat(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	waitPeriod := 3 * time.Second
-	actualHeartbeat := uint64(0)
-	expectedHeartbeat := uint64(waitPeriod / DefaultHeartbeatPeriod)
 
 	sentMsg := []byte("data")
 	actualSentMsg := uint64(0)
@@ -89,8 +87,6 @@ func TestHertbeat(t *testing.T) {
 	recvHandler := func(buf []byte) {
 		if bytes.Compare(buf, sentMsg) == 0 {
 			atomic.AddUint64(&actualSentMsg, 1)
-		} else if bytes.Compare(buf, HeartbeatMsg) == 0 {
-			atomic.AddUint64(&actualHeartbeat, 1)
 		} else {
 			panic("suppose not pass")
 		}
@@ -114,7 +110,6 @@ func TestHertbeat(t *testing.T) {
 		cb.Close()
 
 		require.True(t, actualSentMsg < expectedSentMsg)
-		require.True(t, actualHeartbeat > expectedHeartbeat)
 	}()
 
 	go ea.Listen()
@@ -124,3 +119,98 @@ func TestHertbeat(t *testing.T) {
 
 	time.Sleep(waitPeriod)
 }
+
+// func TestMultipleWrite(t *testing.T) {
+// 	defer goleak.VerifyNone(t)
+
+// 	var mu sync.Mutex
+
+// 	values := make(map[string]struct{})
+
+// 	actual := uint64(0)
+// 	expected := uint64(DefaultMaxPacketSize)
+// 	// expected := uint64(1000)
+
+// 	recvHandler := func(buf []byte) {
+// 		atomic.AddUint64(&actual, 1)
+
+// 		mu.Lock()
+// 		_, exists := values[string(buf)]
+// 		delete(values, string(buf))
+// 		mu.Unlock()
+
+// 		require.True(t, exists)
+// 	}
+
+// 	errHandler := func(err error) {
+// 		require.NoError(t, err)
+// 	}
+
+// 	ca, ea := newEndpoint(t, recvHandler, errHandler)
+// 	cb, eb := newEndpoint(t, recvHandler, errHandler)
+
+// 	defer func() {
+// 		require.NoError(t, ca.SetDeadline(time.Now().Add(1*time.Millisecond)))
+// 		require.NoError(t, cb.SetDeadline(time.Now().Add(1*time.Millisecond)))
+
+// 		require.NoError(t, ea.Close())
+// 		require.NoError(t, eb.Close())
+
+// 		ca.Close()
+// 		cb.Close()
+// 	}()
+
+// 	go ea.Listen()
+// 	go eb.Listen()
+
+// 	for i := uint64(0); i < expected; i++ {
+// 		data := bytes.Repeat([]byte("x"), int(i))
+
+// 		mu.Lock()
+// 		values[string(data)] = struct{}{}
+// 		mu.Unlock()
+
+// 		require.NoError(t, ea.WritePacket(data, eb.Addr()))
+// 	}
+// }
+
+// func newTestRaceConditions(cap int) *testRaceConditions {
+// 	return &testRaceConditions{expected: genNumSlice(cap)}
+// }
+
+// func (t *testRaceConditions) done() {
+// 	t.mu.Lock()
+// 	defer t.mu.Unlock()
+// 	t.wg.Done()
+// }
+
+// func (t *testRaceConditions) wait() {
+// 	t.wg.Wait()
+// }
+
+// func (t *testRaceConditions) append(buf []byte) {
+// 	t.mu.Lock()
+// 	defer t.mu.Unlock()
+
+// 	num, _ := strconv.Atoi(string(buf))
+// 	t.actual = append(t.actual, num)
+// }
+
+// func genNumSlice(len int) (s []int) {
+// 	for i := 0; i < len; i++ {
+// 		s = append(s, i)
+// 	}
+// 	return
+// }
+
+// func uniqSort(s []int) (result []int) {
+// 	sort.Ints(s)
+// 	var pre int
+// 	for i := 0; i < len(s); i++ {
+// 		if i == 0 || s[i] != pre {
+// 			result = append(result, s[i])
+// 		}
+// 		pre = s[i]
+// 	}
+// 	return
+// }
