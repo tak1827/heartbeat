@@ -173,6 +173,9 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 		}
 	}
 
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	timer := e.timers[addr]
 	if timer == nil {
 		// run heartbeat
