@@ -45,25 +45,3 @@ func check(err error) {
 func processPacket(packetData []byte) {
 	log.Printf("recv (packetData size=%d)", len(packetData))
 }
-
-// func transmitPacket(conn net.PacketConn, addr net.Addr, buf []byte) {
-// 	if rand.Intn(100) == 0 {
-// 		// 1% packet loss
-// 		return
-// 	}
-
-// 	n, err := conn.WriteTo(buf, addr)
-
-// 	if err == nil && n != len(buf) {
-// 		err = io.ErrShortWrite
-// 	}
-
-// 	n, err := conn.Write(buf)
-// 	if err != nil {
-// 		log.Fatal(err)
-// 	}
-
-// 	if n < len(buf) {
-// 		log.Fatal("failed to transmit all packet")
-// 	}
-// }

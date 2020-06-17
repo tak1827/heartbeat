@@ -44,7 +44,7 @@ func setDefaultOptions() *Endpoint {
 		heartbeatPeriod: DefaultHeartbeatPeriod,
 		fragmentSize:    DefaultFragmentSize,
 		maxFragments:    DefaultMaxFragments,
-		fReassembly:     make(map[uint16]*fragmentReassemblyData),
+		rBuf:            initReassemblyBuf(),
 		exit:            make(chan struct{}),
 		timers:          make(map[net.Addr]*time.Timer),
 	}

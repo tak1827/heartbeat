@@ -245,8 +245,6 @@ func (t *testConcurrentWrite) wait() {
 func (t *testConcurrentWrite) append(length int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-
-	// num, _ := strconv.Atoi(string(buf))
 	t.actual = append(t.actual, length)
 }
 

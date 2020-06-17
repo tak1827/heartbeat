@@ -7,6 +7,7 @@ import (
 	"github.com/lithdew/reliable"
 	"github.com/valyala/bytebufferpool"
 	// "log"
+	// "github.com/davecgh/go-spew/spew"
 	"math"
 	"net"
 	"sync"
@@ -36,8 +37,9 @@ type Endpoint struct {
 
 	timers map[net.Addr]*time.Timer // heartbeat timer
 
-	// TODO: garbage collection
-	fReassembly map[uint16]*fragmentReassemblyData // map for reassembling fragment packets
+	// Note: last reassembling fragments are removed, when new one come
+	rFragments [ReassemblyBufSize]*fragmentReassemblyData // reassembling fragment packet list
+	rBuf       [ReassemblyBufSize][]byte                  // packet data of reassembling fragment packets
 
 	exit chan struct{} // signal channel to close the conn
 
@@ -132,11 +134,14 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 		// log.Printf("%p: sending packet (fragmentation=%+v) (size=%+v)", e, numFragments, len(packetData))
 
+		e.mu.Lock()
+		seq := e.seq % math.MaxUint16
+		e.seq++
+		e.mu.Unlock()
+
 		// write each fragment with header and data
 		// Note: avoid concurrently sending which lead to slow down
 		for fragmentID = 0; fragmentID < numFragments; fragmentID++ {
-			seq := e.seq % math.MaxUint16
-
 			marshalFragmentHeader(buf, seq, fragmentID, numFragments)
 
 			if fragmentID == numFragments-1 {
@@ -159,9 +164,8 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 func (e *Endpoint) ReadPacket(packetData []byte) error {
 	var (
-		fPacket       []byte
-		data          *fragmentReassemblyData
-		ok, completed bool
+		data      *fragmentReassemblyData
+		completed bool
 	)
 
 	// log.Printf("%p: recv packet (size=%+v)", e, len(packetData))
@@ -185,36 +189,64 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 		return err
 	}
 
-	fPacket = packetData[FragmentHeaderSize:]
+	// fPacket = packetData[FragmentHeaderSize:]
 
-	if len(fPacket) > int(e.fragmentSize) {
-		return fmt.Errorf("fragment size is out of range, size: %+v", len(fPacket))
+	if len(packetData[FragmentHeaderSize:]) > int(e.fragmentSize) {
+		return fmt.Errorf("fragment size is out of range, size: %+v", len(packetData[FragmentHeaderSize:]))
 	}
 
-	data, ok = e.fReassembly[h.seq]
-	if !ok {
-		data = newFragmentRessembleyData(h, e.fragmentSize)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	exist := e.moveFrontReassemblyFragments(h.seq)
+	if exist {
+		data = e.rFragments[0]
+	} else {
+		data = newFragmentRessembleyData(h)
 	}
 
 	// ignore already received fragment
-	if _, ok = searchUint8(h.fragmentID, data.fragmentReceived); ok {
+
+	if _, ok := searchUint8(h.fragmentID, data.fragmentReceived); ok {
 		return nil
 	}
 
-	data, completed = data.reassemble(fPacket, h, e.fragmentSize)
+	e.reassemble(packetData[FragmentHeaderSize:], data.rBufIndex, h.fragmentID)
+
+	data, completed = data.update(h, e.fragmentSize, len(packetData[FragmentHeaderSize:]))
 	if completed {
 		if e.rh != nil {
-			e.rh(data.packetData[:data.size])
+			e.rh(e.rBuf[data.rBufIndex][:data.size])
 		}
-
-		delete(e.fReassembly, h.seq)
-
 		return nil
 	}
 
-	e.fReassembly[h.seq] = data
+	e.rFragments[0] = data
 
 	return nil
+}
+
+func (e *Endpoint) reassemble(packet []byte, i uint16, fragmentID uint8) {
+	copy(e.rBuf[i][uint32(fragmentID)*e.fragmentSize:], packet)
+}
+
+func (e *Endpoint) moveFrontReassemblyFragments(target uint16) bool {
+	var now, prev *fragmentReassemblyData
+
+	for i := range e.rFragments {
+		now = e.rFragments[i]
+		e.rFragments[i] = prev
+		if now != nil && now.seq == target {
+			e.rFragments[0] = now
+			return true
+		}
+		prev = now
+		if prev == nil {
+			return false
+		}
+	}
+
+	return false
 }
 
 func (e *Endpoint) Listen() {

@@ -6,7 +6,10 @@ import (
 	"github.com/valyala/bytebufferpool"
 )
 
-const FragmentHeaderSize uint8 = 5
+const (
+	FragmentHeaderSize uint8  = 5
+	ReassemblyBufSize  uint16 = 512
+)
 
 const (
 	RegularPacketPrefix byte = iota
@@ -21,28 +24,36 @@ type fragmentHeader struct {
 }
 
 type fragmentReassemblyData struct {
+	seq                  uint16
 	numFragmentsTotal    uint8
 	numFragmentsReceived uint8
 	fragmentReceived     []uint8
 	size                 uint32
-	packetData           []byte // TODO: allocate from bytebufferpool
+	rBufIndex            uint16
 }
 
-func newFragmentRessembleyData(h *fragmentHeader, fragmentSize uint32) *fragmentReassemblyData {
+func newFragmentRessembleyData(h *fragmentHeader) *fragmentReassemblyData {
 	return &fragmentReassemblyData{
+		seq:               h.seq,
 		numFragmentsTotal: h.numFragments,
-		packetData:        make([]byte, uint32(h.numFragments)*fragmentSize),
+		rBufIndex:         h.seq % ReassemblyBufSize,
 	}
 }
 
-func (f *fragmentReassemblyData) reassemble(packet []byte, h *fragmentHeader, fragmentSize uint32) (*fragmentReassemblyData, bool) {
+func initReassemblyBuf() (buf [ReassemblyBufSize][]byte) {
+	for i := uint16(0); i < ReassemblyBufSize; i++ {
+		buf[i] = make([]byte, int(DefaultFragmentSize)*int(DefaultMaxFragments))
+	}
+	return
+}
+
+func (f *fragmentReassemblyData) update(h *fragmentHeader, fragmentSize uint32, packetSize int) (*fragmentReassemblyData, bool) {
 	f.numFragmentsReceived++
 	f.fragmentReceived = append(f.fragmentReceived, h.fragmentID)
-	copy(f.packetData[uint32(h.fragmentID)*fragmentSize:], packet)
 
 	// last packet
 	if h.fragmentID == h.numFragments-1 {
-		f.size = uint32(f.numFragmentsTotal-1)*fragmentSize + uint32(len(packet))
+		f.size = uint32(f.numFragmentsTotal-1)*fragmentSize + uint32(packetSize)
 	}
 
 	// reassemble completed
