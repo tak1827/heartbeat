@@ -10,9 +10,8 @@ const (
 	DefaultHeartbeatPeriod = 20 * time.Millisecond
 
 	// fragment options
-	// TODO: increase to uint32
-	DefaultFragmentSize uint16 = 1024
-	DefaultMaxFragments uint16 = 64 - 1
+	DefaultFragmentSize uint32 = 4096
+	DefaultMaxFragments uint8  = 64
 )
 
 type Option interface {
@@ -26,17 +25,17 @@ func WithHeartbeatPeriod(heartbeatPeriod time.Duration) Option {
 	return withHeartbeatPeriod{heartbeatPeriod: heartbeatPeriod}
 }
 
-type withFragmentSize struct{ fragmentSize uint16 }
+type withFragmentSize struct{ fragmentSize uint32 }
 
 func (o withFragmentSize) apply(e *Endpoint) { e.fragmentSize = o.fragmentSize }
-func WithFragmentSize(fragmentSize uint16) Option {
+func WithFragmentSize(fragmentSize uint32) Option {
 	return withFragmentSize{fragmentSize: fragmentSize}
 }
 
-type withMaxFragments struct{ maxFragments uint16 }
+type withMaxFragments struct{ maxFragments uint8 }
 
 func (o withMaxFragments) apply(e *Endpoint) { e.maxFragments = o.maxFragments }
-func WithMaxFragments(maxFragments uint16) Option {
+func WithMaxFragments(maxFragments uint8) Option {
 	return withMaxFragments{maxFragments: maxFragments}
 }
 

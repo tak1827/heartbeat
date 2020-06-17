@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	// "github.com/davecgh/go-spew/spew"
 	"github.com/lithdew/reliable"
 	"github.com/valyala/bytebufferpool"
 	// "log"
@@ -15,7 +14,7 @@ import (
 )
 
 // NOTE: a data same as "HeartbeatMsg" is ignored
-var HeartbeatMsg = []byte(".hb")
+var HeartbeatMsg = []byte(".h")
 
 type receiveHandler func(packetData []byte)
 type errorHandler func(err error)
@@ -25,8 +24,8 @@ type Endpoint struct {
 	heartbeatPeriod time.Duration
 
 	// fragments options
-	fragmentSize uint16
-	maxFragments uint16
+	fragmentSize uint32
+	maxFragments uint8
 
 	conn *net.PacketConn
 	addr net.Addr
@@ -66,6 +65,11 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 		opt.apply(e)
 	}
 
+	maxPacketSize := int(e.fragmentSize) * int(e.maxFragments)
+	if maxPacketSize > math.MaxUint32 {
+		return nil, fmt.Errorf("max packet size must be lower than MaxUint32 size: %+v", maxPacketSize)
+	}
+
 	if rh != nil {
 		e.rh = rh
 	}
@@ -103,7 +107,7 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 	)
 
 	pSize := len(packetData)
-	if pSize > int(e.fragmentSize*e.maxFragments) {
+	if pSize > int(e.fragmentSize)*int(e.maxFragments) {
 		return fmt.Errorf("sending data is too large, size: %+v", pSize)
 	}
 
@@ -115,7 +119,7 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 		buf.WriteByte(RegularPacketPrefix)
 		buf.Write(packetData)
 
-		// log.Printf("%p: sending packet without fragmentation", e)
+		// log.Printf("%p: sending packet without fragmentation (size=%+v)", e, len(packetData))
 
 		e.re.WriteReliablePacket(buf.B, addr)
 
@@ -126,7 +130,7 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 		}
 		numFragments := uint8(pSize/int(e.fragmentSize)) + extra
 
-		// log.Printf("%p: sending packet (fragmentation=%+v)", e, numFragments)
+		// log.Printf("%p: sending packet (fragmentation=%+v) (size=%+v)", e, numFragments, len(packetData))
 
 		// write each fragment with header and data
 		// Note: avoid concurrently sending which lead to slow down
@@ -137,9 +141,9 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 			if fragmentID == numFragments-1 {
 				// last　fragment
-				buf.Write(packetData[uint16(fragmentID)*e.fragmentSize:])
+				buf.Write(packetData[uint32(fragmentID)*e.fragmentSize:])
 			} else {
-				buf.Write(packetData[uint16(fragmentID)*e.fragmentSize : uint16(fragmentID+1)*e.fragmentSize])
+				buf.Write(packetData[uint32(fragmentID)*e.fragmentSize : uint32(fragmentID+1)*e.fragmentSize])
 			}
 
 			e.re.WriteReliablePacket(buf.B, addr)
@@ -159,6 +163,8 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 		data          *fragmentReassemblyData
 		ok, completed bool
 	)
+
+	// log.Printf("%p: recv packet (size=%+v)", e, len(packetData))
 
 	pSize := len(packetData)
 	if pSize < 1 || pSize > int(e.fragmentSize)+int(FragmentHeaderSize) {

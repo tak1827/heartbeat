@@ -6,7 +6,6 @@ import (
 	"go.uber.org/goleak"
 	"net"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,17 +28,18 @@ func TestWritePacket(t *testing.T) {
 
 	var mu sync.Mutex
 
-	values := make(map[string]struct{})
+	values := make(map[int]struct{})
 
-	actual := uint64(0)
-	expected := uint64(DefaultFragmentSize * DefaultMaxFragments)
+	actual := uint32(0)
+	expected := uint32(1024)
+	multipleFactor := 100
 
 	recvHandler := func(buf []byte) {
-		atomic.AddUint64(&actual, 1)
+		atomic.AddUint32(&actual, 1)
 
 		mu.Lock()
-		_, exists := values[string(buf)]
-		delete(values, string(buf))
+		_, exists := values[len(buf)]
+		delete(values, len(buf))
 		mu.Unlock()
 
 		require.True(t, exists)
@@ -61,16 +61,18 @@ func TestWritePacket(t *testing.T) {
 
 		ca.Close()
 		cb.Close()
+
+		require.EqualValues(t, expected, atomic.LoadUint32(&actual))
 	}()
 
 	go ea.Listen()
 	go eb.Listen()
 
-	for i := uint64(0); i < expected; i++ {
-		data := bytes.Repeat([]byte("x"), int(i))
+	for i := uint32(0); i < expected; i++ {
+		data := bytes.Repeat([]byte("x"), int(i)*multipleFactor)
 
 		mu.Lock()
-		values[string(data)] = struct{}{}
+		values[len(data)] = struct{}{}
 		mu.Unlock()
 
 		require.NoError(t, ea.WritePacket(data, eb.Addr()))
@@ -83,12 +85,12 @@ func TestHertbeat(t *testing.T) {
 	waitPeriod := 3 * time.Second
 
 	sentMsg := []byte("data")
-	actualSentMsg := uint64(0)
-	expectedSentMsg := uint64(11)
+	actualSentMsg := uint32(0)
+	expectedSentMsg := uint32(11)
 
 	recvHandler := func(buf []byte) {
 		if bytes.Compare(buf, sentMsg) == 0 {
-			atomic.AddUint64(&actualSentMsg, 1)
+			atomic.AddUint32(&actualSentMsg, 1)
 		} else {
 			panic("suppose not pass")
 		}
@@ -111,7 +113,7 @@ func TestHertbeat(t *testing.T) {
 		ca.Close()
 		cb.Close()
 
-		require.True(t, actualSentMsg < expectedSentMsg)
+		require.True(t, atomic.LoadUint32(&actualSentMsg) < expectedSentMsg)
 	}()
 
 	go ea.Listen()
@@ -125,11 +127,12 @@ func TestHertbeat(t *testing.T) {
 func TestConcurrentWrite(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	var expected int = 1024
-	tc := newTestConcurrentWrite(expected)
+	var expected int = 256
+	var multipleFactor int = 1000
+	tc := newTestConcurrentWrite(expected, multipleFactor)
 
 	recvHandler := func(buf []byte) {
-		tc.append(buf)
+		tc.append(len(buf))
 	}
 
 	errHandler := func(err error) {
@@ -180,7 +183,7 @@ func TestConcurrentWrite(t *testing.T) {
 	go func() {
 		defer tc.done()
 		for i := 0; i < len(sB); i++ {
-			data := []byte(strconv.Itoa(sB[i]))
+			data := bytes.Repeat([]byte("x"), sB[i])
 			require.NoError(t, ea.WritePacket(data, eb.Addr()))
 		}
 	}()
@@ -190,7 +193,7 @@ func TestConcurrentWrite(t *testing.T) {
 	go func() {
 		defer tc.done()
 		for i := 0; i < len(sC); i++ {
-			data := []byte(strconv.Itoa(sC[i]))
+			data := bytes.Repeat([]byte("x"), sC[i])
 			require.NoError(t, ea.WritePacket(data, ec.Addr()))
 		}
 	}()
@@ -200,7 +203,7 @@ func TestConcurrentWrite(t *testing.T) {
 	go func() {
 		defer tc.done()
 		for i := 0; i < len(sD); i++ {
-			data := []byte(strconv.Itoa(sD[i]))
+			data := bytes.Repeat([]byte("x"), sD[i])
 			require.NoError(t, ea.WritePacket(data, ed.Addr()))
 		}
 	}()
@@ -210,7 +213,7 @@ func TestConcurrentWrite(t *testing.T) {
 	go func() {
 		defer tc.done()
 		for i := 0; i < len(sE); i++ {
-			data := []byte(strconv.Itoa(sE[i]))
+			data := bytes.Repeat([]byte("x"), sE[i])
 			require.NoError(t, ea.WritePacket(data, ee.Addr()))
 		}
 	}()
@@ -225,8 +228,8 @@ type testConcurrentWrite struct {
 	actual   []int
 }
 
-func newTestConcurrentWrite(cap int) *testConcurrentWrite {
-	return &testConcurrentWrite{expected: genNumSlice(cap)}
+func newTestConcurrentWrite(cap, multipleFactor int) *testConcurrentWrite {
+	return &testConcurrentWrite{expected: genNumSlice(cap, multipleFactor)}
 }
 
 func (t *testConcurrentWrite) done() {
@@ -239,17 +242,17 @@ func (t *testConcurrentWrite) wait() {
 	t.wg.Wait()
 }
 
-func (t *testConcurrentWrite) append(buf []byte) {
+func (t *testConcurrentWrite) append(length int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	num, _ := strconv.Atoi(string(buf))
-	t.actual = append(t.actual, num)
+	// num, _ := strconv.Atoi(string(buf))
+	t.actual = append(t.actual, length)
 }
 
-func genNumSlice(len int) (s []int) {
+func genNumSlice(len, multipleFactor int) (s []int) {
 	for i := 0; i < len; i++ {
-		s = append(s, i*10)
+		s = append(s, i*multipleFactor)
 	}
 	return
 }
@@ -267,7 +270,7 @@ func uniqSort(s []int) (result []int) {
 }
 
 func BenchmarkWrite(b *testing.B) {
-	expected := bytes.Repeat([]byte("x"), int(DefaultFragmentSize*DefaultMaxFragments)/2)
+	expected := bytes.Repeat([]byte("x"), int(DefaultFragmentSize)*int(DefaultMaxFragments)/2)
 
 	recvHandler := func(buf []byte) {
 		require.EqualValues(b, expected, buf)

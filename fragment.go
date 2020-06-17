@@ -24,25 +24,25 @@ type fragmentReassemblyData struct {
 	numFragmentsTotal    uint8
 	numFragmentsReceived uint8
 	fragmentReceived     []uint8
-	size                 uint16
+	size                 uint32
 	packetData           []byte // TODO: allocate from bytebufferpool
 }
 
-func newFragmentRessembleyData(h *fragmentHeader, fragmentSize uint16) *fragmentReassemblyData {
+func newFragmentRessembleyData(h *fragmentHeader, fragmentSize uint32) *fragmentReassemblyData {
 	return &fragmentReassemblyData{
 		numFragmentsTotal: h.numFragments,
-		packetData:        make([]byte, uint16(h.numFragments)*fragmentSize),
+		packetData:        make([]byte, uint32(h.numFragments)*fragmentSize),
 	}
 }
 
-func (f *fragmentReassemblyData) reassemble(packet []byte, h *fragmentHeader, fragmentSize uint16) (*fragmentReassemblyData, bool) {
+func (f *fragmentReassemblyData) reassemble(packet []byte, h *fragmentHeader, fragmentSize uint32) (*fragmentReassemblyData, bool) {
 	f.numFragmentsReceived++
 	f.fragmentReceived = append(f.fragmentReceived, h.fragmentID)
-	copy(f.packetData[uint16(h.fragmentID)*fragmentSize:], packet)
+	copy(f.packetData[uint32(h.fragmentID)*fragmentSize:], packet)
 
 	// last packet
 	if h.fragmentID == h.numFragments-1 {
-		f.size = uint16(f.numFragmentsTotal-1)*fragmentSize + uint16(len(packet))
+		f.size = uint32(f.numFragmentsTotal-1)*fragmentSize + uint32(len(packet))
 	}
 
 	// reassemble completed

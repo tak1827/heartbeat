@@ -31,8 +31,7 @@ func main() {
 	go eb.Listen()
 
 	for i := 0; i < 32; i++ {
-		val := bytes.Repeat([]byte("x"), i*100)
-		// val := bytes.Repeat([]byte("x"), 2400)
+		val := bytes.Repeat([]byte("x"), i*1000)
 		check(ea.WritePacket(val, cb.LocalAddr()))
 	}
 }

@@ -1,5 +1,5 @@
 # heartbeat
 
 ## Important nones
-- Allowed max packet size can be sent is `MaxUint32(4294967296)`.
-- A sent data which is same as heartbeat packet(`=[]byte(".hb")`) is ignored.
+- Allowed max packet size can be sent is `MaxUint32(4294967295)`.
+- Allowed max fragment num is `MaxUint8(255)`
