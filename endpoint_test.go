@@ -124,12 +124,133 @@ func TestHertbeat(t *testing.T) {
 	time.Sleep(waitPeriod)
 }
 
-func TestConcurrentWrite(t *testing.T) {
+func testConcurrentWrite(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	var expected int = 256
 	var multipleFactor int = 1000
-	tc := newTestConcurrentWrite(expected, multipleFactor)
+
+	cs, es, tc := newEndpointsForConcurrent(t, expected, multipleFactor)
+
+	defer func() {
+		tc.wait()
+
+		// Note: Guarantee that all messages are deliverd
+		time.Sleep(100 * time.Millisecond)
+
+		require.NoError(t, cs[0].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[1].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[2].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[3].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[4].SetDeadline(time.Now().Add(1*time.Millisecond)))
+
+		require.NoError(t, es[0].Close())
+		require.NoError(t, es[1].Close())
+		require.NoError(t, es[2].Close())
+		require.NoError(t, es[3].Close())
+		require.NoError(t, es[4].Close())
+
+		cs[0].Close()
+		cs[1].Close()
+		cs[2].Close()
+		cs[3].Close()
+		cs[4].Close()
+
+		require.EqualValues(t, tc.expected, uniqSort(tc.actual))
+	}()
+
+	for i := 0; i < 4; i++ {
+		tc.wg.Add(1)
+		s := tc.expected[len(tc.expected)*i/4 : len(tc.expected)*(i+1)/4]
+		go func(i int) {
+			defer tc.done()
+			for j := 0; j < len(s); j++ {
+				data := bytes.Repeat([]byte("x"), s[j])
+				require.NoError(t, es[0].WritePacket(data, es[i+1].Addr()))
+			}
+		}(i)
+	}
+}
+
+func testConcurrentRead(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	var expected int = 256
+	var multipleFactor int = 1000
+
+	cs, es, tc := newEndpointsForConcurrent(t, expected, multipleFactor)
+
+	defer func() {
+		tc.wait()
+
+		// Note: Guarantee that all messages are deliverd
+		time.Sleep(100 * time.Millisecond)
+
+		require.NoError(t, cs[0].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[1].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[2].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[3].SetDeadline(time.Now().Add(1*time.Millisecond)))
+		require.NoError(t, cs[4].SetDeadline(time.Now().Add(1*time.Millisecond)))
+
+		require.NoError(t, es[0].Close())
+		require.NoError(t, es[1].Close())
+		require.NoError(t, es[2].Close())
+		require.NoError(t, es[3].Close())
+		require.NoError(t, es[4].Close())
+
+		cs[0].Close()
+		cs[1].Close()
+		cs[2].Close()
+		cs[3].Close()
+		cs[4].Close()
+
+		require.EqualValues(t, tc.expected, uniqSort(tc.actual))
+	}()
+
+	for i := 0; i < 4; i++ {
+		tc.wg.Add(1)
+		s := tc.expected[len(tc.expected)*i/4 : len(tc.expected)*(i+1)/4]
+		go func(i int) {
+			defer tc.done()
+			for j := 0; j < len(s); j++ {
+				data := bytes.Repeat([]byte("x"), s[j])
+				require.NoError(t, es[i+1].WritePacket(data, es[0].Addr()))
+			}
+		}(i)
+	}
+}
+
+// Note: This struct is test for testConcurrentWrite and TestConcurrentRead
+// The purpose for this struct is to prevent race condition of WaitGroup
+type testConcurrent struct {
+	mu       sync.Mutex
+	wg       sync.WaitGroup
+	expected []int
+	actual   []int
+}
+
+func newTestConcurrent(cap, multipleFactor int) *testConcurrent {
+	return &testConcurrent{expected: genNumSlice(cap, multipleFactor)}
+}
+
+func (t *testConcurrent) done() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.wg.Done()
+}
+
+func (t *testConcurrent) wait() {
+	t.wg.Wait()
+}
+
+func (t *testConcurrent) append(length int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.actual = append(t.actual, length)
+}
+
+func newEndpointsForConcurrent(t *testing.T, expected, multipleFactor int) (cs []net.PacketConn, es []*Endpoint, tc *testConcurrent) {
+	tc = newTestConcurrent(expected, multipleFactor)
 
 	recvHandler := func(buf []byte) {
 		tc.append(len(buf))
@@ -139,113 +260,14 @@ func TestConcurrentWrite(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	ca, ea := newEndpoint(t, recvHandler, errHandler)
-	cb, eb := newEndpoint(t, recvHandler, errHandler)
-	cc, ec := newEndpoint(t, recvHandler, errHandler)
-	cd, ed := newEndpoint(t, recvHandler, errHandler)
-	ce, ee := newEndpoint(t, recvHandler, errHandler)
+	for i := 0; i < 5; i++ {
+		c, e := newEndpoint(t, recvHandler, errHandler)
+		cs = append(cs, c)
+		es = append(es, e)
+		go e.Listen()
+	}
 
-	defer func() {
-		tc.wait()
-
-		// Note: Guarantee that all messages are deliverd
-		time.Sleep(100 * time.Millisecond)
-
-		require.NoError(t, ca.SetDeadline(time.Now().Add(1*time.Millisecond)))
-		require.NoError(t, cb.SetDeadline(time.Now().Add(1*time.Millisecond)))
-		require.NoError(t, cc.SetDeadline(time.Now().Add(1*time.Millisecond)))
-		require.NoError(t, cd.SetDeadline(time.Now().Add(1*time.Millisecond)))
-		require.NoError(t, ce.SetDeadline(time.Now().Add(1*time.Millisecond)))
-
-		require.NoError(t, ea.Close())
-		require.NoError(t, eb.Close())
-		require.NoError(t, ec.Close())
-		require.NoError(t, ed.Close())
-		require.NoError(t, ee.Close())
-
-		ca.Close()
-		cb.Close()
-		cc.Close()
-		cd.Close()
-		ce.Close()
-
-		require.EqualValues(t, tc.expected, uniqSort(tc.actual))
-	}()
-
-	go ea.Listen()
-	go eb.Listen()
-	go ec.Listen()
-	go ed.Listen()
-	go ee.Listen()
-
-	tc.wg.Add(1)
-	sB := tc.expected[0 : len(tc.expected)/4]
-	go func() {
-		defer tc.done()
-		for i := 0; i < len(sB); i++ {
-			data := bytes.Repeat([]byte("x"), sB[i])
-			require.NoError(t, ea.WritePacket(data, eb.Addr()))
-		}
-	}()
-
-	tc.wg.Add(1)
-	sC := tc.expected[len(tc.expected)/4 : len(tc.expected)*2/4]
-	go func() {
-		defer tc.done()
-		for i := 0; i < len(sC); i++ {
-			data := bytes.Repeat([]byte("x"), sC[i])
-			require.NoError(t, ea.WritePacket(data, ec.Addr()))
-		}
-	}()
-
-	tc.wg.Add(1)
-	sD := tc.expected[len(tc.expected)*2/4 : len(tc.expected)*3/4]
-	go func() {
-		defer tc.done()
-		for i := 0; i < len(sD); i++ {
-			data := bytes.Repeat([]byte("x"), sD[i])
-			require.NoError(t, ea.WritePacket(data, ed.Addr()))
-		}
-	}()
-
-	tc.wg.Add(1)
-	sE := tc.expected[len(tc.expected)*3/4:]
-	go func() {
-		defer tc.done()
-		for i := 0; i < len(sE); i++ {
-			data := bytes.Repeat([]byte("x"), sE[i])
-			require.NoError(t, ea.WritePacket(data, ee.Addr()))
-		}
-	}()
-}
-
-// Note: This struct is test for TestConcurrentWrite
-// The purpose for this struct is to prevent race condition of WaitGroup
-type testConcurrentWrite struct {
-	mu       sync.Mutex
-	wg       sync.WaitGroup
-	expected []int
-	actual   []int
-}
-
-func newTestConcurrentWrite(cap, multipleFactor int) *testConcurrentWrite {
-	return &testConcurrentWrite{expected: genNumSlice(cap, multipleFactor)}
-}
-
-func (t *testConcurrentWrite) done() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.wg.Done()
-}
-
-func (t *testConcurrentWrite) wait() {
-	t.wg.Wait()
-}
-
-func (t *testConcurrentWrite) append(length int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.actual = append(t.actual, length)
+	return
 }
 
 func genNumSlice(len, multipleFactor int) (s []int) {

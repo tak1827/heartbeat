@@ -189,8 +189,6 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 		return err
 	}
 
-	// fPacket = packetData[FragmentHeaderSize:]
-
 	if len(packetData[FragmentHeaderSize:]) > int(e.fragmentSize) {
 		return fmt.Errorf("fragment size is out of range, size: %+v", len(packetData[FragmentHeaderSize:]))
 	}
