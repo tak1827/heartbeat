@@ -7,22 +7,20 @@ import (
 	"github.com/lithdew/reliable"
 	"github.com/valyala/bytebufferpool"
 	// "log"
-	// "github.com/davecgh/go-spew/spew"
 	"math"
 	"net"
 	"sync"
 	"time"
 )
 
-// NOTE: a data same as "HeartbeatMsg" is ignored
-var HeartbeatMsg = []byte(".h")
-
 type receiveHandler func(packetData []byte)
 type errorHandler func(err error)
 
 type Endpoint struct {
 	// heartbeat options
-	heartbeatPeriod time.Duration
+	hbPeriod       time.Duration
+	hbDeadline     time.Duration
+	maxHbReceivers uint16
 
 	// fragments options
 	fragmentSize uint32
@@ -35,22 +33,21 @@ type Endpoint struct {
 
 	seq uint16 // fragment packets sequence number
 
-	timers map[net.Addr]*time.Timer // heartbeat timer
+	hbs []*Heartbeat
 
 	// Note: last reassembling fragments are removed, when new one come
 	rFragments [ReassemblyBufSize]*fragmentReassemblyData // reassembling fragment packet list
 	rBuf       [ReassemblyBufSize][]byte                  // packet data of reassembling fragment packets
 
-	exit chan struct{} // signal channel to close the conn
-
 	// Note: ack and heartbeat are ignored on this receiver
 	rh receiveHandler
 	eh errorHandler
 
+	exit chan struct{} // signal channel to close the conn
+
 	pool bytebufferpool.Pool
 
 	mu sync.Mutex
-	wg sync.WaitGroup
 }
 
 // Note: about reOpts, reliable.WithEndpointPacketHandler is overwritten
@@ -66,6 +63,8 @@ func NewEndpoint(conn net.PacketConn, rh receiveHandler, eh errorHandler, opts [
 	for _, opt := range opts {
 		opt.apply(e)
 	}
+
+	e.hbs = make([]*Heartbeat, e.maxHbReceivers)
 
 	maxPacketSize := int(e.fragmentSize) * int(e.maxFragments)
 	if maxPacketSize > math.MaxUint32 {
@@ -157,7 +156,11 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 		}
 	}
 
-	e.runHeartbeat(addr)
+	// run heartbeat if not hearbeat packet
+	if bytes.Compare(packetData, HeartbeatMsg) != 0 {
+		fmt.Printf("path ====== %+v\n", len(packetData))
+		go e.runHeartbeat(addr)
+	}
 
 	return nil
 }
@@ -247,6 +250,29 @@ func (e *Endpoint) moveFrontReassemblyFragments(target uint16) bool {
 	return false
 }
 
+func (e *Endpoint) moveFrontHeartbeats(target net.Addr) bool {
+	var now, prev *Heartbeat
+
+	for i := range e.hbs {
+		now = e.hbs[i]
+		e.hbs[i] = prev
+		if now != nil && now.addr.String() == target.String() {
+			e.hbs[0] = now
+			return true
+		}
+		prev = now
+		if prev == nil {
+			return false
+		}
+
+		if i == len(e.hbs)-1 {
+			e.hbs[i].deadline = time.Now()
+		}
+	}
+
+	return false
+}
+
 func (e *Endpoint) Listen() {
 	e.re.Listen()
 }
@@ -256,7 +282,6 @@ func (e *Endpoint) Close() error {
 		return err
 	}
 	close(e.exit)
-	e.wg.Wait()
 	return nil
 }
 
@@ -264,32 +289,38 @@ func (e *Endpoint) runHeartbeat(addr net.Addr) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	timer, exist := e.timers[addr]
+	exist := e.moveFrontHeartbeats(addr)
 	if !exist {
-		// run heartbeat
-		timer = time.NewTimer(e.heartbeatPeriod)
-		e.timers[addr] = timer
-
-		e.wg.Add(1)
-		go func() {
-			defer e.wg.Done()
-			e.sendHeartbeat(timer, addr)
-		}()
-
+		e.hbs[0] = newHeartbeat(addr, e.hbPeriod, e.hbDeadline)
 	} else {
 		// reset heartbeat timer
-		timer.Reset(e.heartbeatPeriod)
+		e.hbs[0].timer.Reset(e.hbPeriod)
+		e.hbs[0].deadline = time.Now().Add(e.hbDeadline)
+	}
+
+	if e.hbs[0].stopped {
+		// run heartbeat
+		go func(hb *Heartbeat) {
+			e.sendHeartbeat(hb)
+		}(e.hbs[0])
 	}
 }
 
-func (e *Endpoint) sendHeartbeat(timer *time.Timer, addr net.Addr) {
+func (e *Endpoint) sendHeartbeat(hb *Heartbeat) {
 	for {
 		select {
 		case <-e.exit:
 			return
-		case <-timer.C:
-			timer.Reset(e.heartbeatPeriod)
-			if err := e.WritePacket(HeartbeatMsg, addr); err != nil {
+		case <-hb.timer.C:
+			e.mu.Lock()
+			if hb.stopped || time.Now().After(hb.deadline) {
+				hb.stopped = true
+				e.mu.Unlock()
+				return
+			}
+			hb.timer.Reset(e.hbPeriod)
+			e.mu.Unlock()
+			if err := e.WritePacket(HeartbeatMsg, hb.addr); err != nil {
 				if e.eh != nil {
 					e.eh(fmt.Errorf("failed to write heartbeat, %+v", err))
 				}

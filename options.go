@@ -1,13 +1,14 @@
 package heartbeat
 
 import (
-	"net"
 	"time"
 )
 
 const (
 	// heartbeat options
-	DefaultHeartbeatPeriod = 20 * time.Millisecond
+	DefaulthbPeriod                    = 20 * time.Millisecond
+	DefaultHearbeatDeadline            = 1000 * time.Millisecond
+	DefaultMaxHearbeatReceivers uint16 = 32
 
 	// fragment options
 	DefaultFragmentSize uint32 = 4096
@@ -18,11 +19,27 @@ type Option interface {
 	apply(e *Endpoint)
 }
 
-type withHeartbeatPeriod struct{ heartbeatPeriod time.Duration }
+type withhbPeriod struct{ hbPeriod time.Duration }
 
-func (o withHeartbeatPeriod) apply(e *Endpoint) { e.heartbeatPeriod = o.heartbeatPeriod }
-func WithHeartbeatPeriod(heartbeatPeriod time.Duration) Option {
-	return withHeartbeatPeriod{heartbeatPeriod: heartbeatPeriod}
+func (o withhbPeriod) apply(e *Endpoint) { e.hbPeriod = o.hbPeriod }
+func WithhbPeriod(hbPeriod time.Duration) Option {
+	return withhbPeriod{hbPeriod: hbPeriod}
+}
+
+type withHearbeatTimeout struct{ hbDeadline time.Duration }
+
+func (o withHearbeatTimeout) apply(e *Endpoint) { e.hbDeadline = o.hbDeadline }
+func WithHearbeatTimeout(hbDeadline time.Duration) Option {
+	return withHearbeatTimeout{hbDeadline: hbDeadline}
+}
+
+type withMaxHearbeatReceivers struct{ maxHbReceivers uint16 }
+
+func (o withMaxHearbeatReceivers) apply(e *Endpoint) {
+	e.maxHbReceivers = o.maxHbReceivers
+}
+func WithMaxHearbeatReceivers(maxHbReceivers uint16) Option {
+	return withMaxHearbeatReceivers{maxHbReceivers: maxHbReceivers}
 }
 
 type withFragmentSize struct{ fragmentSize uint32 }
@@ -41,11 +58,12 @@ func WithMaxFragments(maxFragments uint8) Option {
 
 func setDefaultOptions() *Endpoint {
 	return &Endpoint{
-		heartbeatPeriod: DefaultHeartbeatPeriod,
-		fragmentSize:    DefaultFragmentSize,
-		maxFragments:    DefaultMaxFragments,
-		rBuf:            initReassemblyBuf(),
-		exit:            make(chan struct{}),
-		timers:          make(map[net.Addr]*time.Timer),
+		hbPeriod:       DefaulthbPeriod,
+		hbDeadline:     DefaultHearbeatDeadline,
+		maxHbReceivers: DefaultMaxHearbeatReceivers,
+		fragmentSize:   DefaultFragmentSize,
+		maxFragments:   DefaultMaxFragments,
+		rBuf:           initReassemblyBuf(),
+		exit:           make(chan struct{}),
 	}
 }

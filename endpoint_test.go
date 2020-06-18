@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	// "github.com/davecgh/go-spew/spew"
 )
 
 func newEndpoint(t *testing.T, rh receiveHandler, eh errorHandler) (net.PacketConn, *Endpoint) {
@@ -79,10 +78,8 @@ func TestWritePacket(t *testing.T) {
 	}
 }
 
-func TestHertbeat(t *testing.T) {
+func TestHeartbeat(t *testing.T) {
 	defer goleak.VerifyNone(t)
-
-	waitPeriod := 3 * time.Second
 
 	sentMsg := []byte("data")
 	actualSentMsg := uint32(0)
@@ -104,6 +101,10 @@ func TestHertbeat(t *testing.T) {
 	cb, eb := newEndpoint(t, recvHandler, errHandler)
 
 	defer func() {
+		ea.mu.Lock()
+		require.True(t, ea.hbs[0].stopped)
+		ea.mu.Unlock()
+
 		require.NoError(t, ca.SetDeadline(time.Now().Add(1*time.Millisecond)))
 		require.NoError(t, cb.SetDeadline(time.Now().Add(1*time.Millisecond)))
 
@@ -121,7 +122,7 @@ func TestHertbeat(t *testing.T) {
 
 	require.NoError(t, ea.WritePacket(sentMsg, eb.Addr()))
 
-	time.Sleep(waitPeriod)
+	time.Sleep(ea.hbDeadline.Truncate(1 * time.Millisecond))
 }
 
 func testConcurrentWrite(t *testing.T) {
