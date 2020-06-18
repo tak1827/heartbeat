@@ -158,7 +158,6 @@ func (e *Endpoint) WritePacket(packetData []byte, addr net.Addr) error {
 
 	// run heartbeat if not hearbeat packet
 	if bytes.Compare(packetData, HeartbeatMsg) != 0 {
-		fmt.Printf("path ====== %+v\n", len(packetData))
 		go e.runHeartbeat(addr)
 	}
 
@@ -199,7 +198,7 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	exist := e.moveFrontReassemblyFragments(h.seq)
+	exist := moveFrontReassemblyFragments(e, h.seq)
 	if exist {
 		data = e.rFragments[0]
 	} else {
@@ -207,14 +206,11 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	}
 
 	// ignore already received fragment
-
 	if _, ok := searchUint8(h.fragmentID, data.fragmentReceived); ok {
 		return nil
 	}
 
-	e.reassemble(packetData[FragmentHeaderSize:], data.rBufIndex, h.fragmentID)
-
-	data, completed = data.update(h, e.fragmentSize, len(packetData[FragmentHeaderSize:]))
+	data, completed = data.reassemble(e, h, packetData[FragmentHeaderSize:])
 	if completed {
 		if e.rh != nil {
 			e.rh(e.rBuf[data.rBufIndex][:data.size])
@@ -225,52 +221,6 @@ func (e *Endpoint) ReadPacket(packetData []byte) error {
 	e.rFragments[0] = data
 
 	return nil
-}
-
-func (e *Endpoint) reassemble(packet []byte, i uint16, fragmentID uint8) {
-	copy(e.rBuf[i][uint32(fragmentID)*e.fragmentSize:], packet)
-}
-
-func (e *Endpoint) moveFrontReassemblyFragments(target uint16) bool {
-	var now, prev *fragmentReassemblyData
-
-	for i := range e.rFragments {
-		now = e.rFragments[i]
-		e.rFragments[i] = prev
-		if now != nil && now.seq == target {
-			e.rFragments[0] = now
-			return true
-		}
-		prev = now
-		if prev == nil {
-			return false
-		}
-	}
-
-	return false
-}
-
-func (e *Endpoint) moveFrontHeartbeats(target net.Addr) bool {
-	var now, prev *Heartbeat
-
-	for i := range e.hbs {
-		now = e.hbs[i]
-		e.hbs[i] = prev
-		if now != nil && now.addr.String() == target.String() {
-			e.hbs[0] = now
-			return true
-		}
-		prev = now
-		if prev == nil {
-			return false
-		}
-
-		if i == len(e.hbs)-1 {
-			e.hbs[i].deadline = time.Now()
-		}
-	}
-
-	return false
 }
 
 func (e *Endpoint) Listen() {
@@ -289,7 +239,7 @@ func (e *Endpoint) runHeartbeat(addr net.Addr) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	exist := e.moveFrontHeartbeats(addr)
+	exist := moveFrontHeartbeats(e, addr)
 	if !exist {
 		e.hbs[0] = newHeartbeat(addr, e.hbPeriod, e.hbDeadline)
 	} else {

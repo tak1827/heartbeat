@@ -40,20 +40,14 @@ func newFragmentRessembleyData(h *fragmentHeader) *fragmentReassemblyData {
 	}
 }
 
-func initReassemblyBuf() (buf [ReassemblyBufSize][]byte) {
-	for i := uint16(0); i < ReassemblyBufSize; i++ {
-		buf[i] = make([]byte, int(DefaultFragmentSize)*int(DefaultMaxFragments))
-	}
-	return
-}
-
-func (f *fragmentReassemblyData) update(h *fragmentHeader, fragmentSize uint32, packetSize int) (*fragmentReassemblyData, bool) {
+func (f *fragmentReassemblyData) reassemble(e *Endpoint, h *fragmentHeader, packet []byte) (*fragmentReassemblyData, bool) {
 	f.numFragmentsReceived++
 	f.fragmentReceived = append(f.fragmentReceived, h.fragmentID)
+	copy(e.rBuf[f.rBufIndex][uint32(h.fragmentID)*e.fragmentSize:], packet)
 
 	// last packet
 	if h.fragmentID == h.numFragments-1 {
-		f.size = uint32(f.numFragmentsTotal-1)*fragmentSize + uint32(packetSize)
+		f.size = uint32(f.numFragmentsTotal-1)*e.fragmentSize + uint32(len(packet))
 	}
 
 	// reassemble completed
@@ -62,6 +56,32 @@ func (f *fragmentReassemblyData) update(h *fragmentHeader, fragmentSize uint32, 
 	}
 
 	return f, false
+}
+
+func initReassemblyBuf() (buf [ReassemblyBufSize][]byte) {
+	for i := uint16(0); i < ReassemblyBufSize; i++ {
+		buf[i] = make([]byte, int(DefaultFragmentSize)*int(DefaultMaxFragments))
+	}
+	return
+}
+
+func moveFrontReassemblyFragments(e *Endpoint, target uint16) bool {
+	var now, prev *fragmentReassemblyData
+
+	for i := range e.rFragments {
+		now = e.rFragments[i]
+		e.rFragments[i] = prev
+		if now != nil && now.seq == target {
+			e.rFragments[0] = now
+			return true
+		}
+		prev = now
+		if prev == nil {
+			return false
+		}
+	}
+
+	return false
 }
 
 func marshalFragmentHeader(b *bytebufferpool.ByteBuffer, seq uint16, fragmentID, numFragments uint8) {

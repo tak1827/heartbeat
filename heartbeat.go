@@ -22,3 +22,26 @@ func newHeartbeat(addr net.Addr, period, deadline time.Duration) *Heartbeat {
 		stopped:  true,
 	}
 }
+
+func moveFrontHeartbeats(e *Endpoint, target net.Addr) bool {
+	var now, prev *Heartbeat
+
+	for i := range e.hbs {
+		now = e.hbs[i]
+		e.hbs[i] = prev
+		if now != nil && now.addr.String() == target.String() {
+			e.hbs[0] = now
+			return true
+		}
+		prev = now
+		if prev == nil {
+			return false
+		}
+
+		if i == len(e.hbs)-1 {
+			e.hbs[i].deadline = time.Now()
+		}
+	}
+
+	return false
+}
